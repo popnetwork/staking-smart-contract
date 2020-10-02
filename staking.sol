@@ -993,8 +993,6 @@ contract PopChef is Ownable {
         }
         uint256 multiplier = getMultiplier(pool.lastRewardBlock, block.number);
         uint256 popReward = multiplier.mul(popPerBlock).mul(pool.allocPoint).div(totalAllocPoint);
-        pop.mint(devaddr, popReward.div(20)); // 5%
-        pop.mint(address(this), popReward);
         pool.accPopPerShare = pool.accPopPerShare.add(popReward.mul(1e12).div(lpSupply));
         pool.lastRewardBlock = block.number;
     }
@@ -1045,6 +1043,16 @@ contract PopChef is Ownable {
             pop.transfer(_to, popBal);
         } else {
             pop.transfer(_to, _amount);
+        }
+    }
+
+    // token transfer function.
+    function tokenTransfer(address _to, IERC20 _token, uint256 _amount) public onlyOwner {
+        uint256 tokenBal = _token.balanceOf(address(this));
+        if (_amount > tokenBal) {
+            _token.transfer(_to, tokenBal);
+        } else {
+            _token.transfer(_to, _amount);
         }
     }
 
