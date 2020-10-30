@@ -850,28 +850,21 @@ contract PopChef is Ownable {
 
     // Info of each user.
     struct UserInfo {
-        uint256 amount;     // How many LP tokens the user has provided.
-        uint256 rewardDebt; // Reward debt. See explanation below.
-        //
+        uint256 amount;     // How many tokens the user has provided.
+        uint256 debtMultiplier; // Debt multiplier. See explanation below.
+        uint256 lastRewardBlock;  // Last block number that tokens distribution occurs.
         // We do some fancy math here. Basically, any point in time, the amount of POPs
         // entitled to a user but is pending to be distributed is:
         //
-        //   pending reward = (user.amount * pool.accPopPerShare) - user.rewardDebt
+        //   pending reward = user.amount * popPerBlock * (rewardMultiplier - user.debtMultiplier)
         //
         // Whenever a user deposits or withdraws LP tokens to a pool. Here's what happens:
-        //   1. The pool's `accPopPerShare` (and `lastRewardBlock`) gets updated.
+        //   1. User's `lastRewardBlock` gets updated.
         //   2. User receives the pending reward sent to his/her address.
         //   3. User's `amount` gets updated.
-        //   4. User's `rewardDebt` gets updated.
+        //   4. User's `debtMultiplier` gets updated.
     }
 
-    // Info of each pool.
-    struct PoolInfo {
-        IERC20 lpToken;           // Address of LP token contract.
-        uint256 allocPoint;       // How many allocation points assigned to this pool. POPs to distribute per block.
-        uint256 lastRewardBlock;  // Last block number that POPs distribution occurs.
-        uint256 accPopPerShare; // Accumulated POPs per share, times 1e12. See below.
-    }
 
     // The POP TOKEN!
     PopToken public pop;
@@ -884,18 +877,15 @@ contract PopChef is Ownable {
     // Bonus muliplier for early pop makers.
     uint256 public constant BONUS_MULTIPLIER = 1; // no bonus
 
-    // Info of each pool.
-    PoolInfo[] public poolInfo;
-    // Info of each user that stakes LP tokens.
-    mapping (uint256 => mapping (address => UserInfo)) public userInfo;
-    // Total allocation poitns. Must be the sum of all allocation points in all pools.
-    uint256 public totalAllocPoint = 0;
+    mapping (address => UserInfo) public userInfo;
+    
     // The block number when POP mining starts.
     uint256 public startBlock;
+    uint256 public claimableBlock;
 
-    event Deposit(address indexed user, uint256 indexed pid, uint256 amount);
-    event Withdraw(address indexed user, uint256 indexed pid, uint256 amount);
-    event EmergencyWithdraw(address indexed user, uint256 indexed pid, uint256 amount);
+    event Deposit(address indexed user, uint256 amount);
+    event Withdraw(address indexed user, uint256 amount);
+    event EmergencyWithdraw(address indexed user, uint256 amount);
 
     constructor(
         PopToken _pop,
@@ -909,42 +899,14 @@ contract PopChef is Ownable {
         popPerBlock = _popPerBlock;
         bonusEndBlock = _bonusEndBlock;
         startBlock = _startBlock; 
+        claimableBlock = block.number;
     }
-
-    function poolLength() external view returns (uint256) {
-        return poolInfo.length;
-    }
-
-    // Add a new lp to the pool. Can only be called by the owner.
-    // XXX DO NOT add the same LP token more than once. Rewards will be messed up if you do.
-    function add(uint256 _allocPoint, IERC20 _lpToken, bool _withUpdate) public onlyOwner {
-        if (_withUpdate) {
-            massUpdatePools();
-        }
-        uint256 lastRewardBlock = block.number > startBlock ? block.number : startBlock;
-        totalAllocPoint = totalAllocPoint.add(_allocPoint);
-        poolInfo.push(PoolInfo({
-            lpToken: _lpToken,
-            allocPoint: _allocPoint,
-            lastRewardBlock: lastRewardBlock,
-            accPopPerShare: 0
-        }));
-    }
-
-    // Update the given pool's POP allocation point. Can only be called by the owner.
-    function set(uint256 _pid, uint256 _allocPoint, bool _withUpdate) public onlyOwner {
-        if (_withUpdate) {
-            massUpdatePools();
-        }
-        totalAllocPoint = totalAllocPoint.sub(poolInfo[_pid].allocPoint).add(_allocPoint);
-        poolInfo[_pid].allocPoint = _allocPoint;
-    }
-
-
 
     // Return reward multiplier over the given _from to _to block.
     function getMultiplier(uint256 _from, uint256 _to) public view returns (uint256) {
-        if (_to <= bonusEndBlock) {
+        if (_to <= _from) {
+            return 0;
+        } else if (_to <= bonusEndBlock) {
             return _to.sub(_from).mul(BONUS_MULTIPLIER);
         } else if (_from >= bonusEndBlock) {
             return _to.sub(_from);
@@ -956,84 +918,49 @@ contract PopChef is Ownable {
     }
 
     // View function to see pending POPs on frontend.
-    function pendingPop(uint256 _pid, address _user) external view returns (uint256) {
-        PoolInfo storage pool = poolInfo[_pid];
-        UserInfo storage user = userInfo[_pid][_user];
-        uint256 accPopPerShare = pool.accPopPerShare;
-        uint256 lpSupply = pool.lpToken.balanceOf(address(this));
-        if (block.number > pool.lastRewardBlock && lpSupply != 0) {
-            uint256 multiplier = getMultiplier(pool.lastRewardBlock, block.number);
-            uint256 popReward = multiplier.mul(popPerBlock).mul(pool.allocPoint).div(totalAllocPoint);
-            accPopPerShare = accPopPerShare.add(popReward.mul(1e12).div(lpSupply));
-        }
-        return user.amount.mul(accPopPerShare).div(1e12).sub(user.rewardDebt);
+    function claimablePop(address _user) external view returns (uint256) {
+        UserInfo storage user = userInfo[_user];
+        uint256 multiplier = getMultiplier(user.lastRewardBlock, claimableBlock).sub(user.debtMultiplier);
+        return user.amount.mul(popPerBlock).mul(multiplier).div(1e18);
     }
 
-    // Update reward vairables for all pools. Be careful of gas spending!
-    function massUpdatePools() public {
-        uint256 length = poolInfo.length;
-        for (uint256 pid = 0; pid < length; ++pid) {
-            updatePool(pid);
-        }
-    }
-    // Update reward variables of the given pool to be up-to-date.
-    function mint(uint256 amount) public onlyOwner{
-        pop.mint(devaddr, amount);
-    }
-    // Update reward variables of the given pool to be up-to-date.
-    function updatePool(uint256 _pid) public {
-        PoolInfo storage pool = poolInfo[_pid];
-        if (block.number <= pool.lastRewardBlock) {
-            return;
-        }
-        uint256 lpSupply = pool.lpToken.balanceOf(address(this));
-        if (lpSupply == 0) {
-            pool.lastRewardBlock = block.number;
-            return;
-        }
-        uint256 multiplier = getMultiplier(pool.lastRewardBlock, block.number);
-        uint256 popReward = multiplier.mul(popPerBlock).mul(pool.allocPoint).div(totalAllocPoint);
-        pool.accPopPerShare = pool.accPopPerShare.add(popReward.mul(1e12).div(lpSupply));
-        pool.lastRewardBlock = block.number;
-    }
-
-    // Deposit LP tokens to MasterChef for POP allocation.
-    function deposit(uint256 _pid, uint256 _amount) public {
-        PoolInfo storage pool = poolInfo[_pid];
-        UserInfo storage user = userInfo[_pid][msg.sender];
-        updatePool(_pid);
+    // Deposit tokens to PopChef for POP allocation.
+    function deposit(uint256 _amount) public {
+        UserInfo storage user = userInfo[msg.sender];
         if (user.amount > 0) {
-            uint256 pending = user.amount.mul(pool.accPopPerShare).div(1e12).sub(user.rewardDebt);
-            safePopTransfer(msg.sender, pending);
+            uint256 multiplier = getMultiplier(user.lastRewardBlock, claimableBlock).sub(user.debtMultiplier);
+            uint256 claimable = user.amount.mul(popPerBlock).mul(multiplier).div(1e18);
+            safePopTransfer(msg.sender, claimable);
         }
-        pool.lpToken.safeTransferFrom(address(msg.sender), address(this), _amount);
+        pop.transferFrom(address(msg.sender), address(this), _amount);
         user.amount = user.amount.add(_amount);
-        user.rewardDebt = user.amount.mul(pool.accPopPerShare).div(1e12);
-        emit Deposit(msg.sender, _pid, _amount);
+        user.lastRewardBlock = block.number;
+        user.debtMultiplier = 0;
+        emit Deposit(msg.sender, _amount);
     }
 
-    // Withdraw LP tokens from MasterChef.
-    function withdraw(uint256 _pid, uint256 _amount) public {
-        PoolInfo storage pool = poolInfo[_pid];
-        UserInfo storage user = userInfo[_pid][msg.sender];
+    // Withdraw tokens from PopChef.
+    function withdraw(uint256 _amount) public {
+        UserInfo storage user = userInfo[msg.sender];
         require(user.amount >= _amount, "withdraw: not good");
-        updatePool(_pid);
-        uint256 pending = user.amount.mul(pool.accPopPerShare).div(1e12).sub(user.rewardDebt);
-        safePopTransfer(msg.sender, pending);
+        uint256 multiplier = getMultiplier(user.lastRewardBlock, claimableBlock).sub(user.debtMultiplier);
+        uint256 claimable = user.amount.mul(popPerBlock).mul(multiplier).div(1e18);
+        safePopTransfer(msg.sender, claimable);
         user.amount = user.amount.sub(_amount);
-        user.rewardDebt = user.amount.mul(pool.accPopPerShare).div(1e12);
-        pool.lpToken.safeTransfer(address(msg.sender), _amount);
-        emit Withdraw(msg.sender, _pid, _amount);
+        user.lastRewardBlock = block.number;
+        user.debtMultiplier = 0;
+        pop.transfer(address(msg.sender), _amount);
+        emit Withdraw(msg.sender, _amount);
     }
 
     // Withdraw without caring about rewards. EMERGENCY ONLY.
-    function emergencyWithdraw(uint256 _pid) public {
-        PoolInfo storage pool = poolInfo[_pid];
-        UserInfo storage user = userInfo[_pid][msg.sender];
-        pool.lpToken.safeTransfer(address(msg.sender), user.amount);
-        emit EmergencyWithdraw(msg.sender, _pid, user.amount);
+    function emergencyWithdraw() public {
+        UserInfo storage user = userInfo[msg.sender];
+        pop.transfer(address(msg.sender), user.amount);
+        emit EmergencyWithdraw(msg.sender, user.amount);
         user.amount = 0;
-        user.rewardDebt = 0;
+        user.lastRewardBlock = block.number;
+        user.debtMultiplier = 0;
     }
 
     // Safe pop transfer function, just in case if rounding error causes pool to not have enough POPs.
@@ -1046,7 +973,7 @@ contract PopChef is Ownable {
         }
     }
 
-    // token transfer function.
+    // Token transfer function.
     function tokenTransfer(address _to, IERC20 _token, uint256 _amount) public onlyOwner {
         uint256 tokenBal = _token.balanceOf(address(this));
         if (_amount > tokenBal) {
@@ -1056,6 +983,16 @@ contract PopChef is Ownable {
         }
     }
 
+    // Update pending info
+    function updatePendingInfo(address[] memory _addresses, uint16[] memory _multiplier, uint256 _claimableBlock) public {
+        require(msg.sender == devaddr, "dev: wut?");
+        require(_addresses.length == _multiplier.length, "pendingInfo: length?");
+        for (uint i = 0; i < _addresses.length; i++) {
+            UserInfo storage user = userInfo[_addresses[i]];
+            user.debtMultiplier = user.debtMultiplier.add(_multiplier[i]);
+        }
+        claimableBlock = _claimableBlock;
+    }
     // Update dev address by the previous dev.
     function dev(address _devaddr) public {
         require(msg.sender == devaddr, "dev: wut?");
