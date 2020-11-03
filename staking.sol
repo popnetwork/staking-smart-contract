@@ -851,7 +851,7 @@ contract PopChef is Ownable {
     // Info of each user.
     struct UserInfo {
         uint256 amount;     // How many tokens the user has provided.
-        uint256 debtMultiplier; // Debt multiplier. See explanation below.
+        uint256 rewardMultiplier; // Reward Block Count.
         uint256 lastRewardBlock;  // Last block number that tokens distribution occurs.
         // We do some fancy math here. Basically, any point in time, the amount of POPs
         // entitled to a user but is pending to be distributed is:
@@ -862,7 +862,7 @@ contract PopChef is Ownable {
         //   1. User's `lastRewardBlock` gets updated.
         //   2. User receives the pending reward sent to his/her address.
         //   3. User's `amount` gets updated.
-        //   4. User's `debtMultiplier` gets updated.
+        //   4. User's `rewardMultiplier` gets updated.
     }
 
 
@@ -920,22 +920,20 @@ contract PopChef is Ownable {
     // View function to see pending POPs on frontend.
     function claimablePop(address _user) external view returns (uint256) {
         UserInfo storage user = userInfo[_user];
-        uint256 multiplier = getMultiplier(user.lastRewardBlock, claimableBlock).sub(user.debtMultiplier);
-        return user.amount.mul(popPerBlock).mul(multiplier).div(1e18);
+        return user.amount.mul(popPerBlock).mul(user.rewardMultiplier).div(1e18);
     }
 
     // Deposit tokens to PopChef for POP allocation.
     function deposit(uint256 _amount) public {
         UserInfo storage user = userInfo[msg.sender];
         if (user.amount > 0) {
-            uint256 multiplier = getMultiplier(user.lastRewardBlock, claimableBlock).sub(user.debtMultiplier);
-            uint256 claimable = user.amount.mul(popPerBlock).mul(multiplier).div(1e18);
+            uint256 claimable = user.amount.mul(popPerBlock).mul(user.rewardMultiplier).div(1e18);
             safePopTransfer(msg.sender, claimable);
         }
         pop.transferFrom(address(msg.sender), address(this), _amount);
         user.amount = user.amount.add(_amount);
         user.lastRewardBlock = block.number;
-        user.debtMultiplier = 0;
+        user.rewardMultiplier = 0;
         emit Deposit(msg.sender, _amount);
     }
 
@@ -943,12 +941,11 @@ contract PopChef is Ownable {
     function withdraw(uint256 _amount) public {
         UserInfo storage user = userInfo[msg.sender];
         require(user.amount >= _amount, "withdraw: not good");
-        uint256 multiplier = getMultiplier(user.lastRewardBlock, claimableBlock).sub(user.debtMultiplier);
-        uint256 claimable = user.amount.mul(popPerBlock).mul(multiplier).div(1e18);
+        uint256 claimable = user.amount.mul(popPerBlock).mul(user.rewardMultiplier).div(1e18);
         safePopTransfer(msg.sender, claimable);
         user.amount = user.amount.sub(_amount);
         user.lastRewardBlock = block.number;
-        user.debtMultiplier = 0;
+        user.rewardMultiplier = 0;
         pop.transfer(address(msg.sender), _amount);
         emit Withdraw(msg.sender, _amount);
     }
@@ -960,7 +957,7 @@ contract PopChef is Ownable {
         emit EmergencyWithdraw(msg.sender, user.amount);
         user.amount = 0;
         user.lastRewardBlock = block.number;
-        user.debtMultiplier = 0;
+        user.rewardMultiplier = 0;
     }
 
     // Safe pop transfer function, just in case if rounding error causes pool to not have enough POPs.
@@ -984,14 +981,14 @@ contract PopChef is Ownable {
     }
 
     // Update pending info
-    function updatePendingInfo(address[] memory _addresses, uint16[] memory _multiplier, uint256 _claimableBlock) public {
+    function updatePendingInfo(address[] memory _addresses, uint16[] memory _multiplier) public {
         require(msg.sender == devaddr, "dev: wut?");
         require(_addresses.length == _multiplier.length, "pendingInfo: length?");
         for (uint i = 0; i < _addresses.length; i++) {
             UserInfo storage user = userInfo[_addresses[i]];
-            user.debtMultiplier = user.debtMultiplier.add(_multiplier[i]);
+            user.rewardMultiplier = user.rewardMultiplier.add(_multiplier[i]);
         }
-        claimableBlock = _claimableBlock;
+        claimableBlock = block.number;
     }
     // Update dev address by the previous dev.
     function dev(address _devaddr) public {
