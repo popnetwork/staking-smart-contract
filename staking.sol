@@ -853,16 +853,6 @@ contract PopChef is Ownable {
         uint256 amount;     // How many tokens the user has provided.
         uint256 rewardMultiplier; // Reward Block Count.
         uint256 lastRewardBlock;  // Last block number that tokens distribution occurs.
-        // We do some fancy math here. Basically, any point in time, the amount of POPs
-        // entitled to a user but is pending to be distributed is:
-        //
-        //   pending reward = user.amount * popPerBlock * (rewardMultiplier - user.debtMultiplier)
-        //
-        // Whenever a user deposits or withdraws LP tokens to a pool. Here's what happens:
-        //   1. User's `lastRewardBlock` gets updated.
-        //   2. User receives the pending reward sent to his/her address.
-        //   3. User's `amount` gets updated.
-        //   4. User's `rewardMultiplier` gets updated.
     }
 
 
@@ -870,17 +860,18 @@ contract PopChef is Ownable {
     PopToken public pop;
     // Dev address.
     address public devaddr;
-    // Block number when bonus POP period ends.
-    uint256 public bonusEndBlock;
     // POP tokens created per block.
     uint256 public popPerBlock;
-    // Bonus muliplier for early pop makers.
-    uint256 public constant BONUS_MULTIPLIER = 1; // no bonus
+    uint256 public popPerBlockCycleOne;
+    uint256 public popPerBlockCycleTwo;
+    uint256 public popPerBlockCycleThree;
+    uint256 public popPerBlockCycleFour;
 
     mapping (address => UserInfo) public userInfo;
     
     // The block number when POP mining starts.
     uint256 public startBlock;
+    uint256 public startTime;
     uint256 public claimableBlock;
 
     event Deposit(address indexed user, uint256 amount);
@@ -890,15 +881,27 @@ contract PopChef is Ownable {
     constructor(
         PopToken _pop,
         address _devaddr,
-        uint256 _popPerBlock,
-        uint256 _startBlock,
-        uint256 _bonusEndBlock
+        uint256 _startTime,
+        uint256 _popPerBlock
     ) public {
         pop = _pop;
         devaddr = _devaddr;
-        popPerBlock = _popPerBlock;
-        bonusEndBlock = _bonusEndBlock;
-        startBlock = _startBlock; 
+        popPerBlock = 0;
+        popPerBlockCycleOne = _popPerBlock;
+        popPerBlockCycleTwo = _popPerBlock.div(2);
+        popPerBlockCycleThree = _popPerBlock.div(4);
+        popPerBlockCycleFour = _popPerBlock.div(8);
+        startTime = _startTime;
+        if ( startTime <= now && now < startTime + 90 days && popPerBlock != popPerBlockCycleOne) {
+            popPerBlock = popPerBlockCycleOne;
+        } else if ( startTime + 90 days <= now && now < startTime + 180 days && popPerBlock != popPerBlockCycleTwo) {
+            popPerBlock = popPerBlockCycleTwo;
+        } else if ( startTime + 180 days <= now && now < startTime + 270 days && popPerBlock != popPerBlockCycleThree) {
+            popPerBlock = popPerBlockCycleThree;
+        } else if ( startTime + 270 days <= now && now < startTime + 365 days && popPerBlock != popPerBlockCycleFour) {
+            popPerBlock = popPerBlockCycleFour;
+        }
+        startBlock = block.number; 
         claimableBlock = block.number;
     }
 
@@ -906,14 +909,8 @@ contract PopChef is Ownable {
     function getMultiplier(uint256 _from, uint256 _to) public view returns (uint256) {
         if (_to <= _from) {
             return 0;
-        } else if (_to <= bonusEndBlock) {
-            return _to.sub(_from).mul(BONUS_MULTIPLIER);
-        } else if (_from >= bonusEndBlock) {
-            return _to.sub(_from);
         } else {
-            return bonusEndBlock.sub(_from).mul(BONUS_MULTIPLIER).add(
-                _to.sub(bonusEndBlock)
-            );
+            return _to.sub(_from);
         }
     }
 
@@ -984,6 +981,16 @@ contract PopChef is Ownable {
     function updatePendingInfo(address[] memory _addresses, uint16[] memory _multiplier) public {
         require(msg.sender == devaddr, "dev: wut?");
         require(_addresses.length == _multiplier.length, "pendingInfo: length?");
+        require(startTime + 365 days >= now, "pendingInfo: rewards over");
+        if ( startTime <= now && now < startTime + 90 days && popPerBlock != popPerBlockCycleOne) {
+            popPerBlock = popPerBlockCycleOne;
+        } else if ( startTime + 90 days <= now && now < startTime + 180 days && popPerBlock != popPerBlockCycleTwo) {
+            popPerBlock = popPerBlockCycleTwo;
+        } else if ( startTime + 180 days <= now && now < startTime + 270 days && popPerBlock != popPerBlockCycleThree) {
+            popPerBlock = popPerBlockCycleThree;
+        } else if ( startTime + 270 days <= now && now < startTime + 365 days && popPerBlock != popPerBlockCycleFour) {
+            popPerBlock = popPerBlockCycleFour;
+        } 
         for (uint i = 0; i < _addresses.length; i++) {
             UserInfo storage user = userInfo[_addresses[i]];
             user.rewardMultiplier = user.rewardMultiplier.add(_multiplier[i]);
